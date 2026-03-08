@@ -143,44 +143,30 @@ const tokenCache = {};
 async function getTokenName(mint, apiKey) {
   if (tokenCache[mint]) return tokenCache[mint];
 
-  // 1. Jupiter strict list — best for memecoins
-  try {
-    const r = await fetch(`https://tokens.jup.ag/token/${mint}`);
-    if (r.ok) {
-      const d = await r.json();
-      if (d?.symbol) { tokenCache[mint] = d.symbol.toUpperCase(); return tokenCache[mint]; }
-    }
-  } catch {}
+  // Race Jupiter and Helius simultaneously — fastest response wins
+  const results = await Promise.allSettled([
+    // 1. Jupiter — best for memecoins, fast single-token endpoint
+    fetch(`https://tokens.jup.ag/token/${mint}`, { signal: AbortSignal.timeout(3000) })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => d?.symbol ? d.symbol.toUpperCase() : null),
 
-  // 2. Solana Token List (community registry — catches tokens Jupiter misses)
-  try {
-    const r = await fetch(`https://cdn.jsdelivr.net/gh/solana-labs/token-list@main/src/tokens/solana.tokenlist.json`);
-    if (r.ok) {
-      const d = await r.json();
-      const found = d?.tokens?.find(t => t.address === mint);
-      if (found?.symbol) { tokenCache[mint] = found.symbol.toUpperCase(); return tokenCache[mint]; }
-    }
-  } catch {}
+    // 2. Helius DAS — reliable fallback
+    rpc("getAsset", [{ id: mint }], apiKey)
+      .then(d => {
+        const sym = d?.token_info?.symbol || d?.content?.metadata?.symbol || null;
+        const name = d?.content?.metadata?.name || null;
+        if (sym) return sym.toUpperCase();
+        if (name && name.length <= 12 && !name.includes(" ")) return name.toUpperCase();
+        return null;
+      }),
+  ]);
 
-  // 3. Birdeye public token info (no key needed for basic metadata)
-  try {
-    const r = await fetch(`https://public-api.birdeye.so/defi/token_overview?address=${mint}`, {
-      headers: { "x-chain": "solana" }
-    });
-    if (r.ok) {
-      const d = await r.json();
-      if (d?.data?.symbol) { tokenCache[mint] = d.data.symbol.toUpperCase(); return tokenCache[mint]; }
+  for (const r of results) {
+    if (r.status === "fulfilled" && r.value) {
+      tokenCache[mint] = r.value;
+      return tokenCache[mint];
     }
-  } catch {}
-
-  // 4. Helius DAS as final fallback
-  try {
-    const d = await rpc("getAsset", [{ id: mint }], apiKey);
-    const sym = d?.token_info?.symbol || d?.content?.metadata?.symbol || null;
-    const name = d?.content?.metadata?.name || null;
-    if (sym) { tokenCache[mint] = sym.toUpperCase(); return tokenCache[mint]; }
-    if (name && name.length <= 12 && !name.includes(" ")) { tokenCache[mint] = name.toUpperCase(); return tokenCache[mint]; }
-  } catch {}
+  }
 
   return null;
 }
