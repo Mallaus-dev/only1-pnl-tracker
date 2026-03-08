@@ -143,20 +143,19 @@ const tokenCache = {};
 async function getTokenName(mint, apiKey) {
   if (tokenCache[mint]) return tokenCache[mint];
 
-  // Race Jupiter and Helius simultaneously — fastest response wins
   const results = await Promise.allSettled([
-    // 1. Jupiter — best for memecoins, fast single-token endpoint
-    fetch(`https://tokens.jup.ag/token/${mint}`, { signal: AbortSignal.timeout(3000) })
+    // 1. Jupiter — fastest, most accurate for memecoins
+    fetch(`https://tokens.jup.ag/token/${mint}`, { signal: AbortSignal.timeout(4000) })
       .then(r => r.ok ? r.json() : null)
       .then(d => d?.symbol ? d.symbol.toUpperCase() : null),
 
-    // 2. Helius DAS — reliable fallback
-    rpc("getAsset", [{ id: mint }], apiKey)
+    // 2. Helius getAsset with showFungible:true — required to get token symbol
+    rpc("getAsset", [{ id: mint, displayOptions: { showFungible: true } }], apiKey)
       .then(d => {
-        const sym = d?.token_info?.symbol || d?.content?.metadata?.symbol || null;
-        const name = d?.content?.metadata?.name || null;
+        const sym = d?.token_info?.symbol
+          || d?.content?.metadata?.symbol
+          || null;
         if (sym) return sym.toUpperCase();
-        if (name && name.length <= 12 && !name.includes(" ")) return name.toUpperCase();
         return null;
       }),
   ]);
