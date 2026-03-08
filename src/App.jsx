@@ -137,11 +137,52 @@ async function rpc(method, params, apiKey) {
   return d.result;
 }
 
+// Cache to avoid repeated lookups for same mint
+const tokenCache = {};
+
 async function getTokenName(mint, apiKey) {
+  if (tokenCache[mint]) return tokenCache[mint];
+
+  // 1. Jupiter strict list — best for memecoins
+  try {
+    const r = await fetch(`https://tokens.jup.ag/token/${mint}`);
+    if (r.ok) {
+      const d = await r.json();
+      if (d?.symbol) { tokenCache[mint] = d.symbol.toUpperCase(); return tokenCache[mint]; }
+    }
+  } catch {}
+
+  // 2. Solana Token List (community registry — catches tokens Jupiter misses)
+  try {
+    const r = await fetch(`https://cdn.jsdelivr.net/gh/solana-labs/token-list@main/src/tokens/solana.tokenlist.json`);
+    if (r.ok) {
+      const d = await r.json();
+      const found = d?.tokens?.find(t => t.address === mint);
+      if (found?.symbol) { tokenCache[mint] = found.symbol.toUpperCase(); return tokenCache[mint]; }
+    }
+  } catch {}
+
+  // 3. Birdeye public token info (no key needed for basic metadata)
+  try {
+    const r = await fetch(`https://public-api.birdeye.so/defi/token_overview?address=${mint}`, {
+      headers: { "x-chain": "solana" }
+    });
+    if (r.ok) {
+      const d = await r.json();
+      if (d?.data?.symbol) { tokenCache[mint] = d.data.symbol.toUpperCase(); return tokenCache[mint]; }
+    }
+  } catch {}
+
+  // 4. Helius DAS as final fallback
   try {
     const d = await rpc("getAsset", [{ id: mint }], apiKey);
-    return d?.token_info?.symbol || d?.content?.metadata?.symbol || d?.content?.metadata?.name || null;
-  } catch { return null; }
+    const sym = d?.token_info?.symbol || d?.content?.metadata?.symbol || null;
+    const name = d?.content?.metadata?.name || null;
+    if (sym) { tokenCache[mint] = sym.toUpperCase(); return tokenCache[mint]; }
+    if (name && name.length <= 12 && !name.includes(" ")) { tokenCache[mint] = name.toUpperCase(); return tokenCache[mint]; }
+  } catch {}
+
+  return null;
 }
 
 export default function PnLTracker() {
